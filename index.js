@@ -172,7 +172,9 @@ Suds.prototype._stringValueToXML = function _stringValueToXML(name, str) {
 };
 
 Suds.prototype._valueToXML = function _valueToXML(name, val) {
-  if (typeof val === "object") {
+  if (Array.isArray(val)) {
+    return this._arrayValueToXML(name, val);
+  } else if (typeof val === "object") {
     return this._objectValueToXML(name, val);
   } else if (typeof val === "string") {
     return this._stringValueToXML(name, val);
