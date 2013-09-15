@@ -1,0 +1,29 @@
+{
+  "name": "suds",
+  "version": "0.0.0",
+  "description": "SOAP for Node.JS",
+  "main": "index.js",
+  "scripts": {
+    "test": "mocha -R tap"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/deoxxa/suds.git"
+  },
+  "keywords": [
+    "soap"
+  ],
+  "author": "Conrad Pankoff <deoxxa@fknsrs.biz> (http://www.fknsrs.biz/)",
+  "license": "BSD",
+  "bugs": {
+    "url": "https://github.com/deoxxa/suds/issues"
+  },
+  "dependencies": {
+    "xmldom": "~0.1.16",
+    "request": "~2.27.0"
+  },
+  "devDependencies": {
+    "chai": "~1.7.2",
+    "mocha": "~1.12.1"
+  }
+}
