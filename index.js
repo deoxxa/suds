@@ -120,7 +120,9 @@ Suds.prototype._intValueFromXML = function _intValueFromXML(xml) {
 };
 
 Suds.prototype._arrayValueFromXML = function _arrayValueFromXML(xml) {
-  var items = xml.getElementsByTagName("item");
+  var items = [].slice.call(xml.childNodes).filter(function(e) {
+    return e.tagName === "item";
+  });
 
   return [].slice.call(items).map(this.valueFromXML.bind(this));
 };
