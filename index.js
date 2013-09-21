@@ -126,7 +126,9 @@ Suds.prototype._arrayValueFromXML = function _arrayValueFromXML(xml) {
 };
 
 Suds.prototype._mapValueFromXML = function _mapValueFromXML(xml) {
-  var items = xml.getElementsByTagName("item");
+  var items = [].slice.call(xml.childNodes).filter(function(e) {
+    return e.tagName === "item";
+  });
 
   var self = this;
 
