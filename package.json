@@ -1,6 +1,6 @@
 {
   "name": "suds",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Fuck SOAP. Suds are all you need.",
   "main": "index.js",
   "scripts": {
