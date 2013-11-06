@@ -1,7 +1,7 @@
 {
   "name": "suds",
   "version": "0.0.0",
-  "description": "SOAP for Node.JS",
+  "description": "Fuck SOAP. Suds are all you need.",
   "main": "index.js",
   "scripts": {
     "test": "mocha -R tap"
