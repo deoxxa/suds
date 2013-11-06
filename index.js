@@ -1,43 +1,77 @@
 var request = require("request"),
+    url = require("url"),
+    WSDL = require("wsdl"),
     xmldom = require("xmldom");
 
 var dom = new xmldom.DOMImplementation(),
+    document = dom.createDocument(),
     parser = new xmldom.DOMParser(),
     serialiser = new xmldom.XMLSerializer();
 
-var Suds = module.exports = function Suds(options) {
-  this._uri = options.uri;
-  this._urn = options.urn;
+var makeElement = function makeElement(src) {
+  if (typeof src === "function") {
+    src = src();
+  }
+
+  if (typeof src === "string") {
+    return document.createTextNode(src);
+  }
+
+  if (!Array.isArray(src)) {
+    throw new Error("invalid input to makeElement");
+  }
+
+  var node = document.createElementNS(src[0][0], "tempns:" + src[0][1]);
+  node.setAttribute("xmlns:tempns", src[0][0]);
+
+  if (src[1]) {
+    for (var k in src[1]) {
+      node.setAttribute(k, src[1][k]);
+    }
+  }
+
+  src[2].map(makeElement).forEach(function(e) {
+    node.appendChild(e);
+  });
+
+  return node;
 };
 
-Suds.prototype.callRemote = function callRemote(method, parameters, cb) {
-  var xml = this.createRequestXml(method, parameters);
+var Suds = module.exports = function Suds(options) {
+  options = options || {};
 
-  console.log(xml);
+  this._headers = options.headers || [];
+
+  if (options.request) {
+    this._request = options.request;
+  }
+};
+
+Suds.prototype._request = request;
+
+Suds.prototype.callRemote = function callRemote(uri, action, method, parameters, cb) {
+  var xml = this.createRequestXml(method, parameters);
 
   var options = {
     method: "POST",
+    uri: uri,
     headers: {
       "content-type": "text/xml; charset=utf-8",
+      "soapaction": action,
     },
-    uri: this._uri,
     body: xml,
   };
 
   var self = this;
 
-  request(options, function(err, res, data) {
+  this._request.call(this._request, options, function(err, res, data) {
     if (err) {
       return cb(err);
     }
 
-    console.log(data);
-
     if (res.statusCode !== 200) {
       return cb(Error("invalid status code; expected 200 but got " + res.statusCode));
     }
-
-    console.log(data);
 
     try {
       var doc = parser.parseFromString(data);  
@@ -49,142 +83,42 @@ Suds.prototype.callRemote = function callRemote(method, parameters, cb) {
       return cb(Error("couldn't parse response"));
     }
 
-    var result = self._processResponse(doc);
+    try {
+      var result = self._processResponse(doc.documentElement);
+    } catch (e) {
+      return cb(e);
+    }
 
     return cb(null, result);
   });
 };
 
 Suds.prototype._processResponse = function _processResponse(doc) {
-  var envelope = doc.getElementsByTagNameNS("http://schemas.xmlsoap.org/soap/envelope/", "Envelope");
-  if (!envelope.length) { throw new Error("couldn't find envelope element"); }
-  envelope = envelope[0];
-
-  var body = envelope.getElementsByTagNameNS("http://schemas.xmlsoap.org/soap/envelope/", "Body");
-  if (!body.length) { throw new Error("couldn't find body element"); }
-  body = body[0];
-
-  if (!body.hasChildNodes()) {
-    throw new Error("body has no child nodes, no response can be found");
+  if (doc.namespaceURI !== "http://schemas.xmlsoap.org/soap/envelope/" || doc.localName !== "Envelope") {
+    throw new Error("invalid root tag type in response");
   }
 
-  var response = body.childNodes[0];
+  var fault = [].slice.call(doc.childNodes).filter(function(e) {
+    return e.namespaceURI === "http://schemas.xmlsoap.org/soap/envelope/" && e.localName === "Fault";
+  }).shift();
 
-  var returnValue = response.getElementsByTagName("return");
-  if (!returnValue.length) { throw new Error("couldn't find return value"); }
-  returnValue = returnValue[0];
-
-  returnValue = this.valueFromXML(returnValue);
-
-  return returnValue;
-};
-
-Suds.prototype.valueFromXML = function valueFromXML(xml) {
-  var type = xml.getAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "type");
-  if (!type) { throw new Error("couldn't get type"); }
-
-  type = type.split(":");
-
-  var ns = null;
-  if (type.length > 1) {
-    ns = type.shift();
-    type = type.join(":");
-
-    ns = xml.lookupNamespaceURI(ns);
-
-    type = [ns, type].join(":");
-  } else {
-    type = type[0];
+  if (fault) {
+    throw fault;
   }
 
-  switch (type) {
-    case "http://www.w3.org/2001/XMLSchema:string":
-      return this._stringValueFromXML(xml);
-    case "http://www.w3.org/2001/XMLSchema:int":
-      return this._intValueFromXML(xml);
-    case "http://schemas.xmlsoap.org/soap/encoding/:Array":
-      return this._arrayValueFromXML(xml);
-    case "http://xml.apache.org/xml-soap:Map":
-      return this._mapValueFromXML(xml);
-    default:
-      throw new Error("invalid type: " + type);
-  }
-};
+  var body = [].slice.call(doc.childNodes).filter(function(e) {
+    return e.namespaceURI === "http://schemas.xmlsoap.org/soap/envelope/" && e.localName === "Body";
+  }).shift();
 
-Suds.prototype._stringValueFromXML = function _stringValueFromXML(xml) {
-  return xml.hasChildNodes() ? xml.childNodes[0].data : "";
-};
-
-Suds.prototype._intValueFromXML = function _intValueFromXML(xml) {
-  return xml.hasChildNodes() ? parseInt(xml.childNodes[0].data, 10) : null;
-};
-
-Suds.prototype._arrayValueFromXML = function _arrayValueFromXML(xml) {
-  var items = [].slice.call(xml.childNodes).filter(function(e) {
-    return e.tagName === "item";
-  });
-
-  return [].slice.call(items).map(this.valueFromXML.bind(this));
-};
-
-Suds.prototype._mapValueFromXML = function _mapValueFromXML(xml) {
-  var items = [].slice.call(xml.childNodes).filter(function(e) {
-    return e.tagName === "item";
-  });
-
-  var self = this;
-
-  return [].slice.call(items).map(function(e) {
-    var key = e.getElementsByTagName("key"),
-        val = e.getElementsByTagName("value");
-
-    if (!key.length) { throw new Error("couldn't find key"); }
-    if (!val.length) { throw new Error("couldn't find value"); }
-
-    key = key[0];
-    val = val[0];
-
-    key = self.valueFromXML(key);
-    val = self.valueFromXML(val);
-
-    return [key, val];
-  });
-};
-
-Suds.prototype._arrayValueToXML = function _arrayValueToXML(arr) {
-  var doc = dom.createElementNS("http://schemas.xmlsoap.org/soap/encoding/", "SOAP-ENC:Array");
-
-  return doc;
-};
-
-Suds.prototype._objectValueToXML = function _objectValueToXML(name, obj) {
-  var doc = dom.createElement(name);
-
-  for (var k in obj) {
-    doc.appendChild(this._valueToXML(name, obj[k]));
+  if (!body) {
+    throw new Error("couldn't find response body");
   }
 
-  return doc;
-};
+  var content = [].slice.call(body.childNodes).filter(function(e) {
+    return e.localName;
+  }).shift();
 
-Suds.prototype._stringValueToXML = function _stringValueToXML(name, str) {
-  var doc = dom.createElement(name);
-
-  doc.appendChild(dom.createTextNode(str + ""));
-
-  return doc;
-};
-
-Suds.prototype._valueToXML = function _valueToXML(name, val) {
-  if (Array.isArray(val)) {
-    return this._arrayValueToXML(name, val);
-  } else if (typeof val === "object") {
-    return this._objectValueToXML(name, val);
-  } else if (typeof val === "string") {
-    return this._stringValueToXML(name, val);
-  } else if (typeof val === "number") {
-    return this._stringValueToXML(name, val);
-  }
+  return content;
 };
 
 Suds.prototype.createRequestDocument = function createRequestDocument(method, parameters) {
@@ -197,21 +131,30 @@ Suds.prototype.createRequestDocument = function createRequestDocument(method, pa
   env.setAttribute("xmlns:SOAP-ENC", "http://schemas.xmlsoap.org/soap/encoding/");
   env.setAttribute("xmlns:xsd", "http://www.w3.org/2001/XMLSchema");
   env.setAttribute("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance");
-  env.setAttribute("xmlns:ns1", this._urn);
+  env.setAttribute("xmlns:ns1", method[0]);
 
   env.setAttributeNS("http://schemas.xmlsoap.org/soap/envelope/", "SOAP-ENV:encodingStyle", "http://schemas.xmlsoap.org/soap/encoding/");
+
+  this._headers.forEach(function(header) {
+    env.appendChild(makeElement([["http://schemas.xmlsoap.org/soap/envelope/", "Header"], null, [
+      header,
+    ]]));
+  });
 
   var body = doc.createElementNS("http://schemas.xmlsoap.org/soap/envelope/", "SOAP-ENV:Body")
   env.appendChild(body);
 
-  var req = doc.createElementNS(this._urn, ["ns1", method].join(":"));
+  var req = doc.createElementNS(this._urn, ["ns1", method[1]].join(":"));
   body.appendChild(req);
 
   for (var i=0;i<parameters.length;++i) {
-    var parameter = doc.createElement(["param", i].join(""));
-    parameter.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:type", "xsd:string");
-    req.appendChild(parameter);
-    parameter.appendChild(doc.createTextNode(parameters[i]));
+    var node = parameters[i];
+
+    if (!node.localName) {
+      node = makeElement(node);
+    }
+
+    req.appendChild(node);
   }
 
   return doc;
@@ -222,4 +165,138 @@ Suds.prototype.createRequestXml = function createRequestXml(method, parameters) 
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
     serialiser.serializeToString(this.createRequestDocument(method, parameters)),
   ].join("\n");
+};
+
+var _wsdlOptions = {
+  portHandlers: [function(port, element) {
+    var soapAddresses = element.getElementsByTagNameNS("http://schemas.xmlsoap.org/wsdl/soap/", "address");
+
+    if (soapAddresses.length === 1) {
+      port.soap = {
+        address: {
+          location: soapAddresses[0].getAttribute("location"),
+        },
+      };
+    }
+  }],
+  bindingHandlers: [function(binding, element) {
+    var soapBindings = element.getElementsByTagNameNS("http://schemas.xmlsoap.org/wsdl/soap/", "binding");
+
+    if (soapBindings.length === 1) {
+      binding.soap = {
+        binding: {
+          style: soapBindings[0].getAttribute("style"),
+          transport: soapBindings[0].getAttribute("transport"),
+        },
+      };
+    }
+  }],
+  operationHandlers: [function(operation, element) {
+    var soapOperations = element.getElementsByTagNameNS("http://schemas.xmlsoap.org/wsdl/soap/", "operation");
+
+    if (soapOperations.length === 1) {
+      operation.soapOperation = {
+        soapAction: soapOperations[0].getAttribute("soapAction"),
+      };
+    }
+
+    var inputElement = element.getElementsByTagNameNS("http://schemas.xmlsoap.org/wsdl/", "input");
+    if (inputElement.length) {
+      inputElement = inputElement[0];
+
+      var inputBodyElement = inputElement.getElementsByTagNameNS("http://schemas.xmlsoap.org/wsdl/soap/", "body");
+      if (inputBodyElement.length) {
+        inputBodyElement = inputBodyElement[0];
+
+        operation.input.soap = {};
+
+        if (inputBodyElement.hasAttribute("parts")) {
+          operation.input.soap.parts = inputBodyElement.getAttribute("parts");
+        }
+
+        if (inputBodyElement.hasAttribute("use")) {
+          operation.input.soap.use = inputBodyElement.getAttribute("use");
+        }
+
+        if (inputBodyElement.hasAttribute("namespace")) {
+          operation.input.soap.namespace = inputBodyElement.getAttribute("namespace");
+        }
+
+        if (inputBodyElement.hasAttribute("encodingStyle")) {
+          operation.input.soap.encodingStyle = inputBodyElement.getAttribute("encodingStyle");
+        }
+      }
+    }
+
+    var outputElement = element.getElementsByTagNameNS("http://schemas.xmlsoap.org/wsdl/", "output");
+    if (outputElement.length) {
+      outputElement = outputElement[0];
+
+      var outputBodyElement = outputElement.getElementsByTagNameNS("http://schemas.xmlsoap.org/wsdl/soap/", "body");
+      if (outputBodyElement.length) {
+        outputBodyElement = outputBodyElement[0];
+
+        operation.output.soap = {};
+
+        if (outputBodyElement.hasAttribute("parts")) {
+          operation.output.soap.parts = outputBodyElement.getAttribute("parts");
+        }
+
+        if (outputBodyElement.hasAttribute("use")) {
+          operation.output.soap.use = outputBodyElement.getAttribute("use");
+        }
+
+        if (outputBodyElement.hasAttribute("namespace")) {
+          operation.output.soap.namespace = outputBodyElement.getAttribute("namespace");
+        }
+
+        if (outputBodyElement.hasAttribute("encodingStyle")) {
+          operation.output.soap.encodingStyle = outputBodyElement.getAttribute("encodingStyle");
+        }
+      }
+    }
+  }],
+};
+
+Suds.prototype.loadWsdl = function load(wsdlUri, cb) {
+  var wsdlOptions = Object.create(_wsdlOptions);
+
+  wsdlOptions.request = this._request;
+
+  var self = this;
+  WSDL.load(wsdlOptions, wsdlUri, function(err, wsdl) {
+    if (err) {
+      return cb(err);
+    }
+
+    wsdl.services.forEach(function(service) {
+      service.ports.forEach(function(port) {
+        if (!port || !port.soap || !port.soap.address || !port.soap.address.location) {
+          return;
+        }
+
+        var binding = wsdl.bindings.filter(function(binding) {
+          return binding.name[0] === port.binding[0] && binding.name[1] === port.binding[1];
+        }).shift();
+
+        if (!binding) {
+          return;
+        }
+
+        binding.operations.forEach(function(operation) {
+          if (!operation || !operation.input || !operation.input.soap || !operation.input.soap.namespace) {
+            return;
+          }
+
+          if (!operation || !operation.soapOperation || !operation.soapOperation.soapAction) {
+            return;
+          }
+
+          self[operation.name] = self.callRemote.bind(self, port.soap.address.location, operation.soapOperation.soapAction, [operation.input.soap.namespace, operation.input.name]);
+        });
+      });
+    });
+
+    return cb();
+  });
 };
